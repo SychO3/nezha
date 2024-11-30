@@ -4,8 +4,6 @@ on:
   push:
     tags:
       - "v*"
-    branches:
-      - dev
 
 jobs:
   build:
@@ -24,38 +22,18 @@ jobs:
     runs-on: ubuntu-latest
     container:
       image: goreleaser/goreleaser-cross:v1.23
+    env:
+      GOOS: ${{ matrix.goos }}
+      GOARCH: ${{ matrix.goarch }}
+      GOARM: ${{ matrix.goarm }}
+    outputs:
+      tag_name: ${{ steps.extract_branch.outputs.tag }}
     steps:
       - run: git config --global --add safe.directory /__w/nezha/nezha
-
       - uses: actions/checkout@v4
 
-      - uses: robinraju/release-downloader@v1
-        with:
-          repository: nezhahq/admin-frontend
-          tag: v1.0.12
-          fileName: dist.zip
-          latest: true
-          extract: true
-
-      - name: prepare admin-frontend dists
-        run: |
-          rm -rf cmd/dashboard/admin-dist
-          mv dist cmd/dashboard/admin-dist
-
-      - uses: robinraju/release-downloader@v1
-        with:
-          repository: nezhahq/user-frontend
-          tag: v1.0.5
-          fileName: dist.zip
-          latest: true
-          extract: true
-
-      - name: prepare admin-frontend dists
-        run: |
-          rm -rf cmd/dashboard/user-dist
-          mv dist cmd/dashboard/user-dist
-
       - name: Fetch IPInfo GeoIP Database
+        if: github.event_name == 'push' && contains(github.ref, 'refs/tags/')
         env:
           IPINFO_TOKEN: ${{ secrets.IPINFO_TOKEN }}
         run: |
@@ -67,39 +45,17 @@ jobs:
         with:
           go-version: "1.23.x"
 
-      - name: generate swagger docs
-        run: |
-          go install github.com/swaggo/swag/cmd/swag@latest
-          swag init --pd -d . -g ./cmd/dashboard/main.go -o ./cmd/dashboard/docs --parseGoList=false
-
-      - name: Build with tag
-        if: contains(github.ref, 'refs/tags/')
+      - name: Build
         uses: goreleaser/goreleaser-action@v6
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          GOARM: ${{ matrix.goarm }}
         with:
           distribution: goreleaser
           version: "~> v2"
           args: build --single-target --clean --skip=validate
 
-      - name: Build snapshot
-        if: contains(github.ref, 'refs/tags/') == false
-        uses: goreleaser/goreleaser-action@v6
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          GOARM: ${{ matrix.goarm }}
-        with:
-          distribution: goreleaser
-          version: "~> v2"
-          args: build --single-target --clean --skip=validate --snapshot
-
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: dashboard-${{ matrix.goos }}-${{ matrix.goarch }}
+          name: dashboard-${{ env.GOOS }}-${{ env.GOARCH }}
           path: |
             ./dist/*/*
 
@@ -117,6 +73,7 @@ jobs:
       - name: Archive and compress binaries
         run: |
           find assets/*/*/* -type f | while read -r file; do
+            chmod +x $file
             dir=$(dirname "$file")
             filename=$(basename "$file")
             fileWithoutExt="${filename%.*}"
@@ -151,7 +108,7 @@ jobs:
 
   release-docker:
     runs-on: ubuntu-latest
-    if: github.event_name == 'push'
+    if: github.event_name == 'push' && contains(github.ref, 'refs/tags/')
     needs: build
     name: Release Docker images
     steps:
@@ -168,13 +125,9 @@ jobs:
           mkdir dist
           mv ./assets/*/*/* ./dist
 
-      - name: Extract branch name in tag
+      - name: Extract branch name
         run: |
-          if [[ $GITHUB_REF == refs/heads/* ]]; then
-            export TAG_NAME=$(echo ${GITHUB_REF#refs/heads/})
-          else
-            export TAG_NAME=$(echo ${GITHUB_REF#refs/tags/})
-          fi
+          export TAG_NAME=$(echo ${GITHUB_REF#refs/tags/})
           echo "tag=$TAG_NAME" >> $GITHUB_OUTPUT
         id: extract_branch
 
@@ -186,7 +139,6 @@ jobs:
           password: ${{ github.token }}
 
       - name: Log in to the AliyunCS
-        if: contains(github.ref, 'refs/tags/')
         uses: docker/login-action@master
         with:
           registry: registry.cn-shanghai.aliyuncs.com
@@ -201,8 +153,8 @@ jobs:
 
       - name: Set up image name
         run: |
-          GHCR_IMAGE_NAME=$(echo "ghcr.io/${{ github.repository_owner }}/nezha" | tr '[:upper:]' '[:lower:]')
-          if [ ${{ github.repository_owner }} = "nezhahq" ]
+          GHCR_IMAGE_NAME=$(echo "ghcr.io/${{ github.repository_owner }}/nezha-dashboard" | tr '[:upper:]' '[:lower:]')
+          if [ ${{ github.repository_owner }} = "naiba" ]
             then ALI_IMAGE_NAME=$(echo "registry.cn-shanghai.aliyuncs.com/naibahq/nezha-dashboard")
             else ALI_IMAGE_NAME=$(echo "registry.cn-shanghai.aliyuncs.com/${{ github.repository_owner }}/nezha-dashboard" | tr '[:upper:]' '[:lower:]')
           fi
@@ -210,8 +162,7 @@ jobs:
           echo "ALI_IMAGE_NAME=$ALI_IMAGE_NAME" >> $GITHUB_OUTPUT
         id: image-name
 
-      - name: Build dasbboard image And Push with tag
-        if: contains(github.ref, 'refs/tags/')
+      - name: Build dasbboard image And Push
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -223,14 +174,3 @@ jobs:
             ${{ steps.image-name.outputs.GHCR_IMAGE_NAME }}:${{ steps.extract_branch.outputs.tag }}
             ${{ steps.image-name.outputs.ALI_IMAGE_NAME }}:latest
             ${{ steps.image-name.outputs.ALI_IMAGE_NAME }}:${{ steps.extract_branch.outputs.tag }}
-
-      - name: Build dasbboard image And Push snapshot
-        if: contains(github.ref, 'refs/tags/') == false
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: ./Dockerfile
-          platforms: linux/amd64,linux/arm64,linux/s390x
-          push: true
-          tags: |
-            ${{ steps.image-name.outputs.GHCR_IMAGE_NAME }}:${{ steps.extract_branch.outputs.tag }}

@@ -1,8 +1,8 @@
 package model
 
 import (
+	"errors"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -11,52 +11,108 @@ import (
 	"github.com/knadh/koanf/providers/file"
 	"github.com/knadh/koanf/v2"
 	"gopkg.in/yaml.v3"
+)
 
-	"github.com/nezhahq/nezha/pkg/utils"
+var Languages = map[string]string{
+	"zh-CN": "简体中文",
+	"zh-TW": "繁體中文",
+	"en-US": "English",
+	"es-ES": "Español",
+}
+
+var Themes = map[string]string{
+	"default":       "Default",
+	"daynight":      "JackieSung DayNight",
+	"mdui":          "Neko Mdui",
+	"hotaru":        "Hotaru",
+	"angel-kanade":  "AngelKanade",
+	"server-status": "ServerStatus",
+	"custom":        "Custom(local)",
+}
+
+var DashboardThemes = map[string]string{
+	"default": "Default",
+	"custom":  "Custom(local)",
+}
+
+const (
+	ConfigTypeGitHub     = "github"
+	ConfigTypeGitee      = "gitee"
+	ConfigTypeGitlab     = "gitlab"
+	ConfigTypeJihulab    = "jihulab"
+	ConfigTypeGitea      = "gitea"
+	ConfigTypeCloudflare = "cloudflare"
+	ConfigTypeOidc       = "oidc"
 )
 
 const (
-	ConfigUsePeerIP = "NZ::Use-Peer-IP"
-	ConfigCoverAll  = iota
+	ConfigCoverAll = iota
 	ConfigCoverIgnoreAll
 )
 
+// Config 站点配置
 type Config struct {
-	Debug        bool   `mapstructure:"debug" json:"debug,omitempty"`                   // debug模式开关
-	RealIPHeader string `mapstructure:"real_ip_header" json:"real_ip_header,omitempty"` // 真实IP
+	Debug    bool   // debug模式开关
+	Language string // 系统语言，默认 zh-CN
+	Site     struct {
+		Brand               string // 站点名称
+		CookieName          string // 浏览器 Cookie 名称
+		Theme               string
+		DashboardTheme      string
+		CustomCode          string
+		CustomCodeDashboard string
+		ViewPassword        string // 前台查看密码
+	}
+	Oauth2 struct {
+		Type            string
+		Admin           string // 管理员用户名列表
+		AdminGroups     string // 管理员用户组列表
+		ClientID        string
+		ClientSecret    string
+		Endpoint        string
+		OidcDisplayName string // for OIDC Display Name
+		OidcIssuer      string // for OIDC Issuer
+		OidcLogoutURL   string // for OIDC Logout URL
+		OidcRegisterURL string // for OIDC Register URL
+		OidcLoginClaim  string // for OIDC Claim
+		OidcGroupClaim  string // for OIDC Group Claim
+		OidcScopes      string // for OIDC Scopes
+		OidcAutoCreate  bool   // for OIDC Auto Create
+		OidcAutoLogin   bool   // for OIDC Auto Login
+	}
+	HTTPPort      uint
+	GRPCPort      uint
+	GRPCHost      string
+	ProxyGRPCPort uint
+	TLS           bool
 
-	Language       string `mapstructure:"language" json:"language"` // 系统语言，默认 zh_CN
-	SiteName       string `mapstructure:"site_name" json:"site_name"`
-	JWTSecretKey   string `mapstructure:"jwt_secret_key" json:"jwt_secret_key,omitempty"`
-	AgentSecretKey string `mapstructure:"agent_secret_key" json:"agent_secret_key,omitempty"`
-	ListenPort     uint   `mapstructure:"listen_port" json:"listen_port,omitempty"`
-	InstallHost    string `mapstructure:"install_host" json:"install_host,omitempty"`
-	TLS            bool   `mapstructure:"tls" json:"tls,omitempty"`
-	Location       string `mapstructure:"location" json:"location,omitempty"` // 时区，默认为 Asia/Shanghai
-
-	EnablePlainIPInNotification bool `mapstructure:"enable_plain_ip_in_notification" json:"enable_plain_ip_in_notification,omitempty"` // 通知信息IP不打码
+	EnablePlainIPInNotification     bool // 通知信息IP不打码
+	DisableSwitchTemplateInFrontend bool // 前台禁用切换模板功能
 
 	// IP变更提醒
-	EnableIPChangeNotification  bool   `mapstructure:"enable_ip_change_notification" json:"enable_ip_change_notification,omitempty"`
-	IPChangeNotificationGroupID uint64 `mapstructure:"ip_change_notification_group_id" json:"ip_change_notification_group_id"`
-	Cover                       uint8  `mapstructure:"cover" json:"cover"`                                               // 覆盖范围（0:提醒未被 IgnoredIPNotification 包含的所有服务器; 1:仅提醒被 IgnoredIPNotification 包含的服务器;）
-	IgnoredIPNotification       string `mapstructure:"ignored_ip_notification" json:"ignored_ip_notification,omitempty"` // 特定服务器IP（多个服务器用逗号分隔）
+	EnableIPChangeNotification bool
+	IPChangeNotificationTag    string
+	Cover                      uint8  // 覆盖范围（0:提醒未被 IgnoredIPNotification 包含的所有服务器; 1:仅提醒被 IgnoredIPNotification 包含的服务器;）
+	IgnoredIPNotification      string // 特定服务器IP（多个服务器用逗号分隔）
 
-	IgnoredIPNotificationServerIDs map[uint64]bool `mapstructure:"ignored_ip_notification_server_ids" json:"ignored_ip_notification_server_ids,omitempty"` // [ServerID] -> bool(值为true代表当前ServerID在特定服务器列表内）
-	AvgPingCount                   int             `mapstructure:"avg_ping_count" json:"avg_ping_count,omitempty"`
-	DNSServers                     string          `mapstructure:"dns_servers" json:"dns_servers,omitempty"`
+	Location string // 时区，默认为 Asia/Shanghai
 
-	CustomCode          string `mapstructure:"custom_code" json:"custom_code,omitempty"`
-	CustomCodeDashboard string `mapstructure:"custom_code_dashboard" json:"custom_code_dashboard,omitempty"`
+	IgnoredIPNotificationServerIDs map[uint64]bool // [ServerID] -> bool(值为true代表当前ServerID在特定服务器列表内）
+	MaxTCPPingValue                int32
+	AvgPingCount                   int
 
-	k        *koanf.Koanf `json:"-"`
-	filePath string       `json:"-"`
+	DNSServers string
+
+	k        *koanf.Koanf
+	filePath string
 }
 
 // Read 读取配置文件并应用
 func (c *Config) Read(path string) error {
 	c.k = koanf.New(".")
 	c.filePath = path
+
+	// 先读取环境变量，然后读取配置文件；后者可以覆盖前者，因为哪吒支持在线修改配置
 
 	err := c.k.Load(env.Provider("NZ_", ".", func(s string) string {
 		return strings.Replace(strings.ToLower(strings.TrimPrefix(s, "NZ_")), "_", ".", -1)
@@ -77,36 +133,54 @@ func (c *Config) Read(path string) error {
 		return err
 	}
 
-	if c.ListenPort == 0 {
-		c.ListenPort = 8008
+	if c.Oauth2.Type == "" || c.Oauth2.Admin == "" || c.Oauth2.ClientID == "" || c.Oauth2.ClientSecret == "" {
+		return errors.New("missing oauth2 config")
+	}
+
+	if c.Site.Brand == "" {
+		c.Site.Brand = "Nezha Monitoring"
+	}
+	if c.Site.CookieName == "" {
+		c.Site.CookieName = "nezha-dashboard"
+	}
+	if c.Site.Theme == "" {
+		c.Site.Theme = "default"
+	}
+	if c.Site.DashboardTheme == "" {
+		c.Site.DashboardTheme = "default"
 	}
 	if c.Language == "" {
-		c.Language = "zh_CN"
+		c.Language = "zh-CN"
+	}
+	if c.HTTPPort == 0 {
+		c.HTTPPort = 80
+	}
+	if c.GRPCPort == 0 {
+		c.GRPCPort = 5555
+	}
+	if c.EnableIPChangeNotification && c.IPChangeNotificationTag == "" {
+		c.IPChangeNotificationTag = "default"
 	}
 	if c.Location == "" {
 		c.Location = "Asia/Shanghai"
 	}
+	if c.MaxTCPPingValue == 0 {
+		c.MaxTCPPingValue = 1000
+	}
 	if c.AvgPingCount == 0 {
 		c.AvgPingCount = 2
 	}
-	if c.JWTSecretKey == "" {
-		c.JWTSecretKey, err = utils.GenerateRandomString(1024)
-		if err != nil {
-			return err
-		}
-		if err = c.Save(); err != nil {
-			return err
-		}
+	if c.Oauth2.OidcScopes == "" {
+		c.Oauth2.OidcScopes = "openid,profile,email"
 	}
-
-	if c.AgentSecretKey == "" {
-		c.AgentSecretKey, err = utils.GenerateRandomString(32)
-		if err != nil {
-			return err
-		}
-		if err = c.Save(); err != nil {
-			return err
-		}
+	if c.Oauth2.OidcLoginClaim == "" {
+		c.Oauth2.OidcLoginClaim = "sub"
+	}
+	if c.Oauth2.OidcDisplayName == "" {
+		c.Oauth2.OidcDisplayName = "OIDC"
+	}
+	if c.Oauth2.OidcGroupClaim == "" {
+		c.Oauth2.OidcGroupClaim = "groups"
 	}
 
 	c.updateIgnoredIPNotificationID()
@@ -132,11 +206,5 @@ func (c *Config) Save() error {
 	if err != nil {
 		return err
 	}
-
-	dir := filepath.Dir(c.filePath)
-	if err := os.MkdirAll(dir, 0750); err != nil {
-		return err
-	}
-
 	return os.WriteFile(c.filePath, data, 0600)
 }
